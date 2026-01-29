@@ -91,6 +91,23 @@ def get_price():
                 else:
                     price_text = "Login to view"
 
+                # Metadata extraction (Car brands, etc.)
+                metadata = {}
+                prod_vals = card.find_all(class_='prodval')
+                for pv in prod_vals:
+                    prop_elem = pv.find(class_='property')
+                    if prop_elem:
+                        prop_name = prop_elem.get_text(strip=True)
+                        val_elem = pv.find(class_='value')
+                        if val_elem:
+                             # Clean up value text (remove extra spaces)
+                            val_text = " ".join(val_elem.get_text(strip=True).split())
+                            
+                            if "Car brands" in prop_name:
+                                metadata['brands'] = val_text
+                            elif "Car models" in prop_name:
+                                metadata['models'] = val_text
+
                 href = title_elem['href'] if title_elem and title_elem.has_attr('href') else ""
                 if href and not href.startswith('http'):
                     href = f"https://autocatalystmarket.com{href}"
@@ -101,7 +118,9 @@ def get_price():
                     "price_usd": price_usd,
                     "price_eur": price_eur,
                     "display_price": price_text,
-                    "source_url": href
+                    "source_url": href,
+                    "brands": metadata.get('brands', ''),
+                    "models": metadata.get('models', '')
                 })
 
             except Exception as e:
