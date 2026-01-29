@@ -27,6 +27,7 @@ def get_price():
         'Referer': 'https://katalizatorychrzanow.pl/'
     }
     
+    # Payload specific for the Polish site
     data = {
         'action': 'cur_price_table',
         'rows': '0',
@@ -46,9 +47,21 @@ def get_price():
     }
 
     try:
-        print(f"Fetching price for code: {code}", file=sys.stdout)
-        # Added timeout=15 seconds prevents hanging forever
-        response = requests.post(url, headers=headers, data=data, timeout=15)
+        print(f"Starting session for code: {code}", file=sys.stdout)
+        
+        # Use a session to persist cookies like a real browser
+        session = requests.Session()
+        session.headers.update(headers)
+        
+        # Step 1: Visit homepage to get cookies/tokens
+        # Some sites block direct API access without a session
+        print("Step 1: Fetching homepage...", file=sys.stdout)
+        homepage_response = session.get("https://katalizatorychrzanow.pl/", timeout=10)
+        print(f"Homepage status: {homepage_response.status_code}", file=sys.stdout)
+
+        # Step 2: Make the AJAX request with the session
+        print("Step 2: Fetching price...", file=sys.stdout)
+        response = session.post(url, data=data, timeout=15)
         
         print(f"Response status: {response.status_code}", file=sys.stdout)
         
