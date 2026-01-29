@@ -2,9 +2,15 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
+import sys
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
+
+# Health check route
+@app.route('/')
+def home():
+    return "Rekat Price Server is Running!", 200
 
 @app.route('/api/price', methods=['GET'])
 def get_price():
@@ -21,7 +27,6 @@ def get_price():
         'Referer': 'https://katalizatorychrzanow.pl/'
     }
     
-    # Payload specific for the Polish site
     data = {
         'action': 'cur_price_table',
         'rows': '0',
@@ -41,22 +46,25 @@ def get_price():
     }
 
     try:
-        # print(f"Fetching price for code: {code}")
-        response = requests.post(url, headers=headers, data=data)
+        print(f"Fetching price for code: {code}", file=sys.stdout)
+        # Added timeout=15 seconds prevents hanging forever
+        response = requests.post(url, headers=headers, data=data, timeout=15)
         
-        # We proxy the response data. 
-        # The frontend will need to handle parsing if it's HTML, 
-        # or we could parse it here with BeautifulSoup if we knew the structure.
+        print(f"Response status: {response.status_code}", file=sys.stdout)
+        
         return jsonify({
             'success': True, 
             'status': response.status_code,
             'data': response.text 
         })
 
+    except requests.exceptions.Timeout:
+        print("Error: Request timed out", file=sys.stdout)
+        return jsonify({'error': 'Target site timed out'}), 504
     except Exception as e:
+        print(f"Error: {e}", file=sys.stdout)
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    import os
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
