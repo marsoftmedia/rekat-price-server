@@ -2,82 +2,131 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
-import sys
+import logging
+from bs4 import BeautifulSoup
+import re
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+# Enable CORS for all routes
 CORS(app)
 
-# Health check route
+PORT = int(os.environ.get("PORT", 5000))
+
+# Hardcoded crude conversion rate
+USD_TO_EUR_RATE = 0.92
+
 @app.route('/')
-def home():
-    return "Rekat Price Server is Running!", 200
+def health_check():
+    return "Rekat Price Server is Running (AutoCatalystMarket)! v2.0"
 
 @app.route('/api/price', methods=['GET'])
 def get_price():
     code = request.args.get('code')
     if not code:
-        return jsonify({'error': 'Code parameter is required'}), 400
+        return jsonify({"error": "No code provided"}), 400
 
-    url = "https://katalizatorychrzanow.pl/wp-admin/admin-ajax.php"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': 'https://katalizatorychrzanow.pl',
-        'Referer': 'https://katalizatorychrzanow.pl/'
-    }
+    logger.info(f"Received request for code: {code}")
+
+    # Use autocatalystmarket.com (EN version to get USD, then convert)
+    url = "https://autocatalystmarket.com/en/products"
+    params = {'q': code}
     
-    # Payload specific for the Polish site
-    data = {
-        'action': 'cur_price_table',
-        'rows': '0',
-        'offset': '5',
-        'szukaj': code,
-        'brand': 'all',
-        'price': 'all',
-        'typ': '0',
-        'fueltype': '0',
-        'sort': '0',
-        'template': 'mobile',
-        'tc_css': 'true',
-        'tc_js': 'true',
-        'tc_dane': 'top20',
-        'tc_wyszukiwarka': 'true',
-        'tc_lang': 'sk'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
     }
 
     try:
-        print(f"Starting session for code: {code}", file=sys.stdout)
-        
-        # Use a session to persist cookies like a real browser
         session = requests.Session()
-        session.headers.update(headers)
+        logger.info(f"Fetching: {url} with params {params}")
+        response = session.get(url, params=params, headers=headers, timeout=20)
         
-        # Step 1: Visit homepage to get cookies/tokens
-        # Some sites block direct API access without a session
-        print("Step 1: Fetching homepage...", file=sys.stdout)
-        homepage_response = session.get("https://katalizatorychrzanow.pl/", timeout=10)
-        print(f"Homepage status: {homepage_response.status_code}", file=sys.stdout)
+        if response.status_code != 200:
+            logger.error(f"Target site returned status: {response.status_code}")
+            return jsonify({"error": f"Target site returned {response.status_code}"}), 502
 
-        # Step 2: Make the AJAX request with the session
-        print("Step 2: Fetching price...", file=sys.stdout)
-        response = session.post(url, data=data, timeout=15)
+        # Parse HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        print(f"Response status: {response.status_code}", file=sys.stdout)
+        products = []
+        product_cards = soup.find_all(class_='prodcard')
+        
+        logger.info(f"Found {len(product_cards)} product cards")
+        
+        for card in product_cards:
+            try:
+                # Title
+                title_elem = card.find(class_='title')
+                title = title_elem.get_text(strip=True) if title_elem else "Unknown"
+                
+                # Image
+                img_elem = card.find('img', class_='lazyload')
+                img_src = ""
+                if img_elem:
+                    if img_elem.get('data-src'):
+                        img_src = img_elem.get('data-src')
+                    elif img_elem.get('src'):
+                        img_src = img_elem.get('src')
+                
+                # Max Price extraction from "Max price for 6 months: 457 USD"
+                price_text = ""
+                price_usd = 0
+                price_eur = 0
+                
+                max_price_div = card.find(class_='max-price')
+                if max_price_div:
+                    raw_price_text = max_price_div.get_text(strip=True)
+                    match = re.search(r'(\d+)\s*USD', raw_price_text)
+                    if match:
+                        price_usd = int(match.group(1))
+                        price_eur = round(price_usd * USD_TO_EUR_RATE)
+                        price_text = f"{price_eur} €"
+                    else:
+                        price_text = "Price hidden"
+                else:
+                    price_text = "Login to view"
+
+                href = title_elem['href'] if title_elem and title_elem.has_attr('href') else ""
+                if href and not href.startswith('http'):
+                    href = f"https://autocatalystmarket.com{href}"
+
+                products.append({
+                    "title": title,
+                    "image": img_src,
+                    "price_usd": price_usd,
+                    "price_eur": price_eur,
+                    "display_price": price_text,
+                    "source_url": href
+                })
+
+            except Exception as e:
+                logger.error(f"Error parsing card: {e}")
+                continue
+
+        if not products:
+            return jsonify({
+                "success": False, 
+                "message": "Start searching",
+                "products": []
+            })
         
         return jsonify({
-            'success': True, 
-            'status': response.status_code,
-            'data': response.text 
+            "success": True,
+            "count": len(products),
+            "products": products
         })
 
     except requests.exceptions.Timeout:
-        print("Error: Request timed out", file=sys.stdout)
-        return jsonify({'error': 'Target site timed out'}), 504
+        logger.error("Request timed out")
+        return jsonify({"error": "Target site timed out"}), 504
     except Exception as e:
-        print(f"Error: {e}", file=sys.stdout)
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"General error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=PORT)
